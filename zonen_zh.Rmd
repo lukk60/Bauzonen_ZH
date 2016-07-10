@@ -1,0 +1,131 @@
+---
+title: "Überbaute Bauzonen ZH"
+author: "LS"
+date: "Wednesday, April 27, 2016"
+output: html_document
+---
+
+```{r, echo=FALSE, warning=F, error=FALSE, message=FALSE}
+setwd("D:/Datascience/R/Playground/Bauzonen_ZH")
+
+library(dplyr)
+library(tidyr)
+library(scales)
+library(maptools)
+library(RColorBrewer)
+```
+Laden und Aufbereiten der Daten (Quelle: https://opendata.swiss/de/dataset/bauzonen-uberbaut)
+
+```{r}
+zonen <- read.table("data/KANTON_ZUERICH_52.csv", header=T, stringsAsFactors = F, sep=";")
+
+head(zonen)
+summary(zonen)
+
+zonen <- zonen %>% select(BFS_NR, GEBIET_NAME, INDIKATOR_JAHR, INDIKATOR_VALUE) %>% filter(BFS_NR!=0)
+```
+
+
+```{r}
+
+boxplot(INDIKATOR_VALUE~INDIKATOR_JAHR, data=zonen, col="lightblue", notch=T,
+        main="Anteil überbauter Bauzonen in Zürich von 1996 bis 2014",
+        ylab="Prozent", xlab="Jahr")
+
+```
+
+Der Anteil freier Bauzonen hat sich zwischen 1996 und 2014 fast halbiert.
+
+```{r}
+zonen.wide <- zonen %>% select(-BFS_NR) %>% spread(key = GEBIET_NAME, value=INDIKATOR_VALUE)
+
+plot(x=zonen.wide$INDIKATOR_JAHR, y=zonen.wide$Adlikon, ylim=c(50,100), type="n",
+     main="Anteil überbauter Bauzonen pro Gebiet", ylab="Prozent", xlab="Jahr")
+for(i in 2:ncol(zonen.wide)){
+  lines(zonen.wide$INDIKATOR_JAHR, y=zonen.wide[,i], col=alpha("darkgreen", 0.25))
+  }
+```
+
+* Die Unterschiede innerhalb vom Kanton sind im Laufe der Zeit kleiner geworden
+* bei einigen Gemeinden gibt es plötzliche Abfälle von einem Jahr aufs nächste. Dies könnte evtl. aufgrund von Neueinzonungen sein.
+
+Um herauszufinden, ob es Gemeinden mit ähnlichen Verläufen gibt, wenden wir Hierarchical Clustering an.
+
+```{r}
+zonen.jahr <- zonen %>% select(-BFS_NR) %>% spread(INDIKATOR_JAHR, INDIKATOR_VALUE)
+row.names(zonen.jahr) <- zonen.jahr$GEBIET_NAME
+zonen.jahr <- select(zonen.jahr, -GEBIET_NAME)
+zonen.jahr.dist <- dist(zonen.jahr)
+
+zonen.jahr.cluster <- hclust(zonen.jahr.dist, method="ward.D2")
+plot(zonen.jahr.cluster, cex=0.5)
+```
+
+Es scheint 2 resp. 4 unterschiedliche Cluster zu geben
+
+```{r}
+zonen.jahr.groups <- cutree(zonen.jahr.cluster, k=4)
+
+plot(x=zonen.wide$INDIKATOR_JAHR, y=zonen.wide$Adlikon, ylim=c(50,100), type="n",
+     main="Anteil überbauter Bauzonen pro Gebiet", ylab="Prozent", xlab="Jahr")
+for(i in 2:ncol(zonen.wide)){
+  lines(zonen.wide$INDIKATOR_JAHR, y=zonen.wide[,i], col=alpha(zonen.jahr.groups[i-1], 0.25), lwd=1.5)
+  }
+```
+
+Clustering nicht sinnvoll, bildet nur die Prozentangaben nach
+
+###Daten geografisch darstellen
+```{r}
+shapes <- readShapeSpatial("data/g1g14")
+zh.shapes <- shapes[shapes$KTNR==1,]
+zonen.bfsid <- zonen %>% select(-GEBIET_NAME) %>% spread(key=INDIKATOR_JAHR, value=INDIKATOR_VALUE)
+
+ids.match <- match(zh.shapes$GMDNR, zonen.bfsid$BFS_NR)
+
+pal <- colorRampPalette(c("gray93", "red3"))
+cols.1996  <- pal(5)[cut(zonen.bfsid[,2], breaks=seq(from=50, to=100, by=10))]
+cols.2014 <- pal(5)[cut(zonen.bfsid[,20], breaks=seq(from=50, to=100, by=10))]
+
+layout(mat=matrix(c(1,2,3,3),byrow=T, nrow=2, ncol=2), heights=c(0.8,0.2))
+par(mar=c(1,1,3,1))
+
+plot(zh.shapes, col=cols.1996, main="Anteil überbaute Bauzonen 1996")
+plot(zh.shapes, col=cols.2014, main="Anteil überbaute Bauzonen 2014")
+plot(1,type="n", axes=F,xlab="", ylab="")
+legend("center", legend = c("bis 60%", "60%-70%","70%-80%", "80%-90%", "90-100%"), fill=pal(5),horiz=T)
+
+#Differenzen zwischen 1996 und 2014
+par(mfrow=c(1,1))
+zonen.bfsid$delta <- zonen.bfsid[,20]-zonen.bfsid[,2]
+
+pal2 <- colorRampPalette(c("green3", "white", "red3"))
+cols.delta <- pal2(6)[cut(zonen.bfsid[,21], breaks=seq(from=-30, to=30, by=10))]
+plot(zh.shapes, col=cols.delta, main="Veränderung des Anteils überbauter Bauzonen von 1996 bis 2014")
+mtext("Veränderung in Prozentpunkten")
+legend("right", 
+       legend=c("-30% -20%", "-20% bis -10%", "-10% bis 0%", "0% bis +10%", "+10% bis +20%", "+20% bis +30%"),
+       fill=pal2(6))
+```
+
+#Neue Daten zu Bauinvestitionen hinzufügen
+
+```{r}
+invest <- read.table("data/KANTON_ZUERICH_182.csv", header=T, stringsAsFactors = F, sep=";")
+head(invest)
+summary(invest)
+
+invest <- invest %>% filter(BFS_NR !=0) %>% select(BFS_NR, GEBIET_NAME, INDIKATOR_JAHR, INDIKATOR_VALUE)
+names(invest)[4] <- "invest"
+
+
+invest <- inner_join(invest, zonen, by=c("BFS_NR", "INDIKATOR_JAHR")) %>% 
+  select(-GEBIET_NAME.y) %>%
+  rename(bebaut = INDIKATOR_VALUE)
+
+par(mfrow=c(2,2))
+with(invest[invest$INDIKATOR_JAHR==1996,], plot(log(invest), bebaut, main="1996", ylim=c(60,100), xlim=c(0,9)))
+with(invest[invest$INDIKATOR_JAHR==2000,], plot(log(invest), bebaut, main="2000", ylim=c(60,100), xlim=c(0,9)))
+with(invest[invest$INDIKATOR_JAHR==2008,], plot(log(invest), bebaut, main="2008", ylim=c(60,100), xlim=c(0,9)))
+with(invest[invest$INDIKATOR_JAHR==2013,], plot(log(invest), bebaut, main="2013", ylim=c(60,100), xlim=c(0,9)))
+```
